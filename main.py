@@ -1,7 +1,9 @@
-import vlc
 import os
 import sys
+import vlc
+import ast
 import copy
+import msvcrt
 import codecs
 import shutil
 import urllib
@@ -9,16 +11,39 @@ import keyboard
 from bearlibterminal import terminal
 from configparser import ConfigParser
 
-import user_interface as UI
-import msvcrt
-
 config = ConfigParser()
 config.read('main.ini')
 
 starting_path = config.get('innit', 'starting_path')
 starting_drive = config.get('innit', 'starting_drive')
 
-white_list = config.get('innit', 'white_list')
+# Folders which will be tracked for the watched_list
+white_list = ast.literal_eval(config.get('innit', 'white_list'))
+
+# User settings
+user = ConfigParser()
+
+owd = os.getcwd()
+
+try:
+	user.read('user_settings.ini')
+	eq_presets = dict(user.items('eq'))
+	theme_presets = dict(user.items('theme'))
+except:
+	new = config.get('eq', 'default')
+	def_theme = dict(user.items('default'))
+	user.add_section('settings')
+	user.add_section('eq')
+	user.add_section('theme')
+	user.set('eq', 'default', new)
+	user.set('theme', 'default', str(def_theme))
+	eq_presets = dict(user.items('eq'))
+	theme_presets = dict(user.items('theme'))
+	with open('user_settings.ini', "w") as file:
+		user.write(file)
+
+import user_interface as UI
+import modules as MOD
 
 def save_watched_list():
 	with open(starting_drive + starting_path + '/watched_list.txt', "w") as file:
@@ -27,27 +52,40 @@ def save_watched_list():
 def load_watched_list():
 	try:
 		with open(starting_drive + starting_path + '/watched_list.txt', "r") as file:
-			return eval(file.read())
+			return ast.literal_eval(file.read())
 	except:
 		return {}
 
+# Dict of files and their last stop time
 watched_list = load_watched_list()
 
+# The player object for accessing VLC
 class VLC:
 	def __init__(self):
 		self.Player = vlc.Instance('vlc --loop --global-key-play-pause="p" --key-toggle-fullscreen="enter" --sub-autodetect-file') #--width=500 --height=400 --video-x=290 --video-y=160 --no-video-deco --no-embedded-video --video-on-top vlc
 		self.events = vlc.EventType
+		self.eq = vlc.libvlc_audio_equalizer_new()
 		self.t = 0
 		self.l = 0
 		self.p = 0
+
+	def update_eq(self, eq):
+		for i in range(10):
+			n = vlc.libvlc_audio_equalizer_set_amp_at_index(self.eq, eq[i], i)
+			if n == -1:
+				print('failed', i)
+		try:
+			self.listPlayer.get_media_player().set_equalizer(self.eq)
+		except:
+			print('seting eq failed')
 
 	def pos_callback(self, event):
 		self.t = int(self.listPlayer.get_media_player().get_time() * 0.001)
 		self.l = int(self.listPlayer.get_media_player().get_length() * 0.001)
 		self.p = self.listPlayer.get_media_player().get_position()
+		self.whitelist()
 
 	def pos_video(self, event):
-		#print('video callback')
 		# Autoset Subtitle Track #
 		spu_count = self.listPlayer.get_media_player().video_get_spu_count()
 		if spu_count > 1:
@@ -60,15 +98,11 @@ class VLC:
 		self.mediaList = self.Player.media_list_new()
 		self.listPlayer = self.Player.media_list_player_new()
 		self.listPlayer.set_media_list(self.mediaList)
-		self.listPlayer.get_media_player().video_set_key_input(False)
-		self.listPlayer.get_media_player().video_set_mouse_input(True)
+		self.listPlayer.get_media_player().set_equalizer(self.eq)
+		#self.listPlayer.get_media_player().video_set_key_input(False)
+		#self.listPlayer.get_media_player().video_set_mouse_input(True)
 		self.manager = self.listPlayer.get_media_player().event_manager()
 		self.start_callbacks()
-
-	def start_callbacks(self):
-		self.manager = self.listPlayer.get_media_player().event_manager()
-		self.manager.event_attach(vlc.EventType.MediaPlayerTimeChanged, self.pos_callback)
-		self.manager.event_attach(vlc.EventType.MediaPlayerVout, self.pos_video)
 
 	def play_all(self, path):
 		self.mediaList = self.Player.media_list_new()
@@ -77,7 +111,13 @@ class VLC:
 			self.mediaList.add_media(self.Player.media_new(os.path.join(path,s)))
 		self.listPlayer = self.Player.media_list_player_new()
 		self.listPlayer.set_media_list(self.mediaList)
+		self.listPlayer.get_media_player().set_equalizer(self.eq)
 		self.start_callbacks()
+
+	def start_callbacks(self):
+		self.manager = self.listPlayer.get_media_player().event_manager()
+		self.manager.event_attach(vlc.EventType.MediaPlayerTimeChanged, self.pos_callback)
+		self.manager.event_attach(vlc.EventType.MediaPlayerVout, self.pos_video)
 
 	def add_to_playlist(self, path, file):
 		self.mediaList.add_media(self.Player.media_new(os.path.join(path,file)))
@@ -107,7 +147,6 @@ class VLC:
 	def prev(self):
 		self.listPlayer.previous()
 	def stop(self):
-		self.whitelist()
 		self.listPlayer.stop()
 	def set_volume(self, vol):
 		self.listPlayer.get_media_player().audio_set_volume(vol)
@@ -128,45 +167,72 @@ class VLC:
 		save_watched_list()
 
 class MEDIAPLAYER:
+	###############
+	# Configurable #
+	###############
 	title = config.get('innit', 'title')
-	window_width = config.get('innit', 'window_width')
-	window_height = config.get('innit', 'window_height')
-	full_screen = config.getboolean('innit', 'full_screen')
-	tile_size = 16
+	theme = config.get('theme', 'current')
 	hotkeys = config.getboolean('innit', 'hotkeys')
+	tile_size = 16
+	vol = 100
 	#################
 	# System States #
 	#################
 	input_state = 'main'
 	mouse_over = None
 	scroll = 0
+	# Player States #
 	current_playlist = []
-	vol = 100
-	theme = config.get('theme', 'current')
+	current_path = starting_path
+	current_drive = starting_drive
+	current_file = ''
+	playing = ''
+	playlist = False
+	mute = False
+	eq = ast.literal_eval(user.get('eq', user.get('settings', 'eq')))
+	th = ast.literal_eval(user.get('theme', user.get('settings', 'theme')))
 	def __init__(self):
+		#####################################
+		# Initialize BearLibTerminal Window #
+		#####################################
 		terminal.open()
 		font = f'font: MegaFont.ttf, size={self.tile_size}'
-		terminal.set(f"window: title={self.title}, size=70x40, cellsize=20x20, fullscreen=false; {font}")
+		terminal.set(f"window: title={self.title}; {font}")
 		terminal.set("input.filter = keyboard+, mouse+")
 		terminal.printf(25, 2, self.title)
 		terminal.composition(terminal.TK_ON)
-		rgb = UI.select_color('main').split(',')
-		terminal.color(terminal.color_from_argb(255, int(rgb[0]), int(rgb[1]), int(rgb[2])))
 		terminal.refresh()
-		keyboard.add_hotkey(config.get('innit', 'key_toggle'), self.global_space, args=(' '))
-		keyboard.add_hotkey('ctrl+shift+esc', self.global_space, args=('s'))
-		keyboard.add_hotkey(config.get('innit', 'key_next'), self.global_space, args=('n'))
-		keyboard.add_hotkey(config.get('innit', 'key_prev'), self.global_space, args=('b'))
-		keyboard.add_hotkey(config.get('innit', 'key_pause'), self.global_space, args=('p'))
-		keyboard.add_hotkey(config.get('innit', 'key_volup'), self.global_space, args=('u'))
-		keyboard.add_hotkey(config.get('innit', 'key_voldn'), self.global_space, args=('m'))
-		keyboard.add_hotkey(config.get('innit', 'key_rwnd'), self.global_space, args=('j'))
-		keyboard.add_hotkey(config.get('innit', 'key_ffwd'), self.global_space, args=('k'))
-		keyboard.add_hotkey(config.get('innit', 'key_stop'), self.global_space, args=('s'))
-		keyboard.add_hotkey(config.get('innit', 'key_mark_watched'), self.global_space, args=('w'))
+		###################################################################
+		# Global Hotkeys using the keyboard module as a low level wrapper #
+		###################################################################
+		keyboard.add_hotkey(config.get('innit', 'key_toggle'), self.global_hotkey, args=(' '))
+		keyboard.add_hotkey('ctrl+shift+esc', self.global_hotkey, args=('s'))
+		keyboard.add_hotkey(config.get('innit', 'key_next'), self.global_hotkey, args=('n'))
+		keyboard.add_hotkey(config.get('innit', 'key_prev'), self.global_hotkey, args=('b'))
+		keyboard.add_hotkey(config.get('innit', 'key_pause'), self.global_hotkey, args=('p'))
+		keyboard.add_hotkey(config.get('innit', 'key_volup'), self.global_hotkey, args=('u'))
+		keyboard.add_hotkey(config.get('innit', 'key_voldn'), self.global_hotkey, args=('m'))
+		keyboard.add_hotkey(config.get('innit', 'key_rwnd'), self.global_hotkey, args=('j'))
+		keyboard.add_hotkey(config.get('innit', 'key_ffwd'), self.global_hotkey, args=('k'))
+		keyboard.add_hotkey(config.get('innit', 'key_stop'), self.global_hotkey, args=('s'))
+		keyboard.add_hotkey(config.get('innit', 'key_mark_watched'), self.global_hotkey, args=('w'))
 		self.start_main_loop()
 
-	def global_space(self, key):
+	def select_color(self, string):
+		theme = user.get('settings', 'theme')
+		t = ast.literal_eval(user.get('theme', theme))
+		c = t[string]
+		#c = config.get('default', string)
+		return c
+
+	def save_settings(self):
+		curDir = os.getcwd() # save current directory
+		os.chdir(owd) # return to working dir
+		with open('user_settings.ini', 'w') as configfile:
+			user.write(configfile)
+		os.chdir(curDir) # change back
+
+	def global_hotkey(self, key):
 		if key == ' ':
 			self.hotkeys = not self.hotkeys
 		if self.hotkeys:
@@ -198,39 +264,44 @@ class MEDIAPLAYER:
 			if key == 's':
 				self.player.stop()
 
+	def play_new(self, link=None):
+		if self.player != None:
+			self.player.stop()
+			self.player = None
+		self.player = VLC()
+		self.player.new_playlist()
+		self.current_playlist = []
+		if link != None:
+			print(link)
+			self.player.add_to_playlist('', link)
+			self.current_playlist.append(link)
+		else:
+			self.player.add_to_playlist(self.current_drive + '//' + self.current_path + '/', self.current_file)
+			self.current_playlist.append(self.current_drive + '//' + self.current_path + '/' + self.current_file)
+		self.player.set_volume(self.vol)
+		self.player.play()
+		#self.player.listPlayer.get_media_player().get_media().add_options("sub-file={}".format(sub))
+	def play_add(self, link=None):
+		if link != None:
+			self.player.add_to_playlist('', link)
+			self.current_playlist.append(link)
+		else:
+			self.player.add_to_playlist(self.current_drive + '//' + self.current_path + '/', self.current_file)
+			self.current_playlist.append(self.current_drive + '//' + self.current_path + '/' + self.current_file)
+		self.player.set_volume(self.vol)
+		self.player.play()
+
 	def start_main_loop(self):
-		current_path = starting_path
-		current_drive = starting_drive
-		current_file = ''
-		os.chdir(current_drive)
+		os.chdir(self.current_drive)
 		self.player = None
-		playlist = False
-		playing = ''
-		mute = False
-		def play_new():
-			if self.player != None:
-				self.player.stop()
-				self.player = None
-			self.player = VLC()#vlc.MediaPlayer(current_drive + '//' + current_path + '/' + file)
-			self.player.new_playlist()
-			#vlc.video_set_key_input(self.player.listPlayer.get_media_player(), True)
-			self.current_playlist = []
-			self.player.add_to_playlist(current_drive + '//' + current_path + '/', current_file)
-			self.current_playlist.append(current_drive + '//' + current_path + '/' + current_file)
-			self.player.set_volume(self.vol)
-			self.player.play()
-			#sub = current_file[:-3:1] + 'srt'
-			#sub = current_drive + '//' + current_path + '/' + sub
-			#print(sub)
-			#self.player.listPlayer.get_media_player().get_media().add_options("sub-file={}".format(sub))
-		def play_add():
-			self.player.add_to_playlist(current_drive + '//' + current_path + '/', current_file)
-			self.current_playlist.append(current_drive + '//' + current_path + '/' + current_file)
-			self.player.set_volume(self.vol)
-			self.player.play()
+		self.mouse = (terminal.state(terminal.TK_MOUSE_X), terminal.state(terminal.TK_MOUSE_Y))
+		self.cur_color = 'main'
 		while True:
 			key = None
+			self.mouse = (terminal.state(terminal.TK_MOUSE_X), terminal.state(terminal.TK_MOUSE_Y))
 			terminal.clear()
+			rgb = self.select_color('main').split(',')
+			terminal.color(terminal.color_from_argb(255, int(rgb[0]), int(rgb[1]), int(rgb[2])))
 			if terminal.has_input():
 				while terminal.has_input():
 					key = terminal.read()
@@ -239,175 +310,72 @@ class MEDIAPLAYER:
 				break
 			if key == terminal.TK_RESIZED:
 				pass
-				#self.update_window()
-			if self.input_state == 'main':
+			######################
+			# Music Player Title #
+			######################
+			terminal.printf(28, 1, self.title)
+			####################
+			# Draw Main Window #
+			# X Closes Program #
+			####################
+			if UI.draw_window(1, 3, 68, 36, self.select_color('hud'), self.select_color('close')) and key == 128:
+				save_watched_list()
+				break
+			if self.input_state in ['main', 'eq', 'theme']:
 				#if self.player != None:
 					#print(self.player.listPlayer.get_media_player().video_get_cursor())
 				if key == terminal.TK_ESCAPE:
 					if self.player != None:
 						self.player.stop()
-				if key == terminal.TK_SPACE:
+				if key == terminal.TK_SPACE or key == terminal.TK_P:
 					if self.player != None:
 						self.player.pause()
 					self.key = ''
-				mouse = (terminal.state(terminal.TK_MOUSE_X), terminal.state(terminal.TK_MOUSE_Y))
-				if UI.draw_window(1, 2, 68, 36):
-					if key == 128:
-						save_watched_list()
-						break
-				terminal.printf(25, 3, self.title)
-				files = current_path.split('/')
-				p = 10
-				new_path = '/'
-				for i in range(len(files)):
-					if files[i] == '':
-						continue
-					terminal.printf(p, 1, '│')
-					new_path = new_path + files[i] + '/'
-					if UI.button_text(p+1, 1, files[i]) and key == 128:
-						current_path = new_path
-						break
-					p += len(files[i]) + 1
-				if UI.button_text(1, 1, 'Drive: ' + current_drive) and key == 128:
-					if current_drive == 'C:':
-						current_drive = 'D:'
-						current_path = '/'
-					else:
-						current_drive = 'C:'
-						current_path = '/'
-					os.chdir(current_drive)
-					self.scroll = 0
-				file = self.list_dir(current_drive + current_path)
-				if key == 128 and file != None:
-					if '.' in file:
-						current_file = file
-						if playlist == False:
-							play_new()
-						else:
-							play_add()
-						#except:
-							#print('failed to load:', file)
-					elif current_path == '/':
-						current_path = current_path + file
-						self.scroll = 0
-					else:
-						current_path = current_path + '/' + file
-						self.scroll = 0
-				if current_path != '/' and UI.button_text(2, 3, '...Back') and key == 128:
-					self.scroll = 0
-					new_path = current_path.split('/')
-					current_path = '/'.join(new_path[:-1:1])
-					if current_path == '':
-						current_path = '/'
 				################
-				# File Browser #
+				# Tab Switcher #
 				################
+				w = 2
+				h = 1
+				MOD.main_tabs(self, w, h, key)
+				###############
+				# Main window #
+				###############
 				w = 1
-				h = 4
-				if mouse[1] >= h and mouse[1] < h + 25:
-					if mouse[0] >= w and mouse[0] < w + 51:
-						if key == terminal.TK_MOUSE_SCROLL:
-							self.scroll+=terminal.state(terminal.TK_MOUSE_WHEEL)
-				UI.draw_rect(w, h, 3, 25)
+				h = 5
 				UI.draw_rect(w + 2, h, 50, 25)
-				if UI.button_text(w+1, h + 2, '⮝') and key == 128:
-					self.scroll -= 10
-				if UI.button_text(w+1, h + 4, '▲') and key == 128:
-					self.scroll -= 1
-				if UI.button_text(w+1, h + 20, '▼') and key == 128:
-					self.scroll += 1
-				if UI.button_text(w+1, h + 22, '⮟') and key == 128:
-					self.scroll += 10
-				if UI.button_text(w+3, h + 26, 'Play All') and key == 128:
-					try:
-						if self.player != None:
-							self.player.stop()
-							self.player = None
-							continue
-						self.current_playlist = []
-						self.player = VLC()
-						self.player.play_all(current_path)
-						dir = os.listdir(current_path)
-						for i in dir:
-							file = i.split('/')[-1]
-							self.current_playlist.append(current_drive + '//' + current_path + '/' + file)
-						self.player.set_volume(self.vol)
-						self.player.play()
-					except:
-						print('could not play dir', current_path)
-				if playlist:
-					if UI.button_text(w+19, h + 26, 'Selection: Add') and key == 128:
-						playlist = False
-				else:
-					if UI.button_text(w+19, h + 26, 'Selection: Play') and key == 128:
-						playlist = True
+				if self.input_state == 'main':
+					MOD.file_browser(self, w, h, key)
+				elif self.input_state == 'eq':
+					#############
+					# Equalizer #
+					#############
+					w = 1
+					h = 5
+					MOD.equalizer(self, w, h, eq_presets, user, key)
+				elif self.input_state == 'theme':
+					#################
+					# Theme Options #
+					#################
+					w = 1
+					h = 5
+					MOD.themes(self, w, h, theme_presets, user, key)
 				###################
 				# Playlist Window #
 				###################
 				w = 52
-				h = 4
-				UI.draw_rect(w, h, 17, 25)
-				count = 0
-				if self.current_playlist != []:
-					for i in range(len(self.current_playlist)):
-						file = self.current_playlist[i].split('/')[-1]
-						count += 1
-						if file == playing:
-							terminal.printf(w+1, h+count, '[color=' + UI.select_color('selected') + ']' + self.trimmed(file, 17))
-						else:
-							if UI.button_text(w+1, h+count, self.trimmed(file, 13)) and key == 128:
-								self.player.play_index(i)
+				h = 5
+				MOD.playlist(self, w, h, key)
 				#################
 				# Player Window #
 				#################
 				if self.player != None:
-					w = 36
+					w = 42
 					h = 28
-					if UI.draw_window(w+1, h+1, 30, 6) and key == 128:
-						self.player.stop()
-						self.player = None
-						continue
-					playing = self.trimmed(self.player.get_name(), 60)
-					terminal.printf(5,h+8, playing)
-					bar, pos = UI.time_bar(4, h+7, 63, self.player.p)
-					if bar and key == 128:
-						self.player.listPlayer.get_media_player().set_position(pos)
-					UI.draw_rect(3, h+6, 64, 4)
-					if mouse[1] >= h and mouse[1] < h + 6:
-						if mouse[0] >= w and mouse[0] < w + 32:
-							if key == terminal.TK_MOUSE_SCROLL:
-								self.vol -= terminal.state(terminal.TK_MOUSE_WHEEL)
-								if self.vol < 0:
-									self.vol = 0
-								elif self.vol > 200:
-									self.vol = 200
-								self.player.set_volume(self.vol)
-					if UI.button_text(w + 2, h + 2, 'Play') and key == 128:
-						self.player.play()
-					if UI.button_text(w + 2, h + 5, 'Prev') and key == 128:
-						self.player.prev()
-					if UI.button_text(w + 9, h + 2, 'Pause') and key == 128:
-						self.player.pause()
-					if UI.button_text(w + 17, h+ 2, 'Stop') and key == 128:
-						self.player.stop()
-					if UI.button_text(w + 17, h+ 5, 'Next') and key == 128:
-						self.player.next()
-					if UI.button_text(w + 27, h+ 2, '▲') and key == 128:
-						if self.vol < 200:
-							self.vol += 5
-						self.player.set_volume(vol)
-					if UI.button_text(w + 27, h+ 4, '▼') and key == 128:
-						if self.vol > 0:
-							self.vol -= 5
-						self.player.set_volume(self.vol)
-					if UI.button_text(w + 9, h+ 5, 'Mute') and key == 128:
-						mute = not mute
-						if mute:
-							self.player.set_volume(0)
-						else:
-							self.player.set_volume(self.vol)
-					terminal.printf(w+25,h+3, str(self.vol))
-					terminal.printf(w+23,h+5, str(self.player.t) +'/'+str(self.player.l))
+					MOD.player_ui(self, w, h, key)
+					###############
+					# Track Title #
+					###############
+					MOD.track_title_ui(self, w, h, key)
 			terminal.refresh()
 		print('closing')
 
@@ -416,7 +384,7 @@ class MEDIAPLAYER:
 			text = text[:length:1]
 		return text
 
-	def list_dir(self, path):
+	def list_dir(self, w, h, path):
 		#self.mouse_over = None
 		dir = os.listdir(path)
 		file = None
@@ -459,7 +427,7 @@ class MEDIAPLAYER:
 				else:
 					watched_list.pop(rname, None)
 			name = self.trimmed(file_list[i + self.scroll], 48)
-			if UI.button_text(4, 5 + i, name, color=color):
+			if UI.button_text(w+3, h+1 + i, name, self.select_color('selected'), bg=color):
 				self.mouse_over = rname
 				file = file_list[i + self.scroll]
 		return file
