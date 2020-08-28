@@ -3,26 +3,53 @@ import sys
 import vlc
 import ast
 import copy
+import time
 import msvcrt
 import codecs
 import shutil
 import urllib
 import keyboard
+
+import ctypes
+from ctypes import wintypes
+
 from bearlibterminal import terminal
 from configparser import ConfigParser
+'''
+#from Xlib.display import Display
+def printWindowHierrarchy(window, indent):
+    children = window.query_tree().children
+    for w in children:
+        print(indent, w.get_wm_class())
+        printWindowHierrarchy(w, indent+'-')
+'''
+def get_current_win():
+	user32 = ctypes.windll.user32
+	h_wnd = user32.GetForegroundWindow()
+	pid = wintypes.DWORD()
+	user32.GetWindowThreadProcessId(h_wnd, ctypes.byref(pid))
+	return pid.value
 
 config = ConfigParser()
 config.read('main.ini')
 
-starting_path = config.get('innit', 'starting_path')
-starting_drive = config.get('innit', 'starting_drive')
+dl = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+drives = ['%s:' % d for d in dl if os.path.exists('%s:' % d)]
+starting_drive = config.get('innit', 'starting_drive') if config.get('innit', 'starting_drive') in drives else drives[0]
+starting_path = config.get('innit', 'starting_path') if os.path.exists( starting_drive + '/' + config.get('innit', 'starting_path')) else '/'
 
 # Folders which will be tracked for the watched_list
 white_list = ast.literal_eval(config.get('innit', 'white_list'))
+file_types = ast.literal_eval(config.get('innit', 'file_types'))
 
 # User settings
 user = ConfigParser()
-
+header = '''
+#########################################
+# User Config File for PxL Media PLayer #
+#        MODIFY AT YOUR OWN RISK        #
+#########################################
+\n'''
 owd = os.getcwd()
 
 try:
@@ -46,28 +73,37 @@ import user_interface as UI
 import modules as MOD
 
 def save_watched_list():
-	with open(starting_drive + starting_path + '/watched_list.txt', "w") as file:
+	#curDir = os.getcwd() # save current directory
+	#print(curDir)
+	#os.chdir(owd) # return to working dir
+	with open('watched_list.txt', "w") as file:
 		file.write(str(watched_list))
+	#os.chdir(curDir) # change back
 
 def load_watched_list():
+	#curDir = os.getcwd() # save current directory
+	#os.chdir(owd) # return to working dir
 	try:
-		with open(starting_drive + starting_path + '/watched_list.txt', "r") as file:
+		with open('watched_list.txt', "r") as file:
 			return ast.literal_eval(file.read())
 	except:
+		print('No watched_list.txt found')
 		return {}
+	#os.chdir(curDir) # change back
 
 # Dict of files and their last stop time
 watched_list = load_watched_list()
 
-# The player object for accessing VLC
+# The player object for accessing python-VLC
 class VLC:
 	def __init__(self):
-		self.Player = vlc.Instance('vlc --loop --global-key-play-pause="p" --key-toggle-fullscreen="enter" --sub-autodetect-file') #--width=500 --height=400 --video-x=290 --video-y=160 --no-video-deco --no-embedded-video --video-on-top vlc
+		self.Player = vlc.Instance('vlc --video-title=Player --loop --key-play-pause=space --key-toggle-fullscreen=enter --sub-autodetect-file') #--width=500 --height=400 --video-x=290 --video-y=160 --no-video-deco --no-embedded-video --video-on-top vlc
 		self.events = vlc.EventType
 		self.eq = vlc.libvlc_audio_equalizer_new()
 		self.t = 0
 		self.l = 0
 		self.p = 0
+		self.new_playlist()
 
 	def update_eq(self, eq):
 		for i in range(10):
@@ -99,19 +135,9 @@ class VLC:
 		self.listPlayer = self.Player.media_list_player_new()
 		self.listPlayer.set_media_list(self.mediaList)
 		self.listPlayer.get_media_player().set_equalizer(self.eq)
-		#self.listPlayer.get_media_player().video_set_key_input(False)
+		self.listPlayer.get_media_player().video_set_key_input(True)
 		#self.listPlayer.get_media_player().video_set_mouse_input(True)
 		self.manager = self.listPlayer.get_media_player().event_manager()
-		self.start_callbacks()
-
-	def play_all(self, path):
-		self.mediaList = self.Player.media_list_new()
-		songs = os.listdir(path)
-		for s in songs:
-			self.mediaList.add_media(self.Player.media_new(os.path.join(path,s)))
-		self.listPlayer = self.Player.media_list_player_new()
-		self.listPlayer.set_media_list(self.mediaList)
-		self.listPlayer.get_media_player().set_equalizer(self.eq)
 		self.start_callbacks()
 
 	def start_callbacks(self):
@@ -127,14 +153,14 @@ class VLC:
 		self.listPlayer.play_item_at_index(i)
 		#self.listPlayer.get_media_player().set_video_title_display()
 	def play(self):
-		p = 0
-		if self.p > 0:
-			p = self.p
+		p = None
+		#self.listPlayer.get_media_player().set_xwindow(get_current_win())
 		self.listPlayer.play()
 		name = self.listPlayer.get_media_player().get_media().get_mrl()
 		if name in watched_list:
 			p = watched_list[name]
-		self.listPlayer.get_media_player().set_position(p)
+		if p != None:
+			self.listPlayer.get_media_player().set_position(p)
 
 	def pan(self, t):
 		c = self.listPlayer.get_media_player().get_time()
@@ -148,6 +174,7 @@ class VLC:
 		self.listPlayer.previous()
 	def stop(self):
 		self.listPlayer.stop()
+		save_watched_list()
 	def set_volume(self, vol):
 		self.listPlayer.get_media_player().audio_set_volume(vol)
 	def get_name(self):
@@ -156,6 +183,10 @@ class VLC:
 		name = name.replace('%20', ' ')
 		name = name.replace('%27', '\'')
 		return name
+
+	def fullscreen(self):
+		f = not vlc.libvlc_get_fullscreen(self.listPlayer.get_media_player())
+		vlc.libvlc_set_fullscreen(self.listPlayer.get_media_player(), f)
 
 	def whitelist(self):
 		global watched_list
@@ -179,18 +210,26 @@ class MEDIAPLAYER:
 	# System States #
 	#################
 	input_state = 'main'
+	drop_down = None
 	mouse_over = None
 	scroll = 0
 	# Player States #
 	current_playlist = []
 	current_path = starting_path
+	current_drives = drives
 	current_drive = starting_drive
 	current_file = ''
 	playing = ''
 	playlist = False
 	mute = False
-	eq = ast.literal_eval(user.get('eq', user.get('settings', 'eq')))
-	th = ast.literal_eval(user.get('theme', user.get('settings', 'theme')))
+	try:
+		eq = ast.literal_eval(user.get('eq', user.get('settings', 'eq')))
+	except:
+		eq = ast.literal_eval(user.get('eq', 'default'))
+	try:
+		th = ast.literal_eval(user.get('theme', user.get('settings', 'theme')))
+	except:
+		th = ast.literal_eval(user.get('theme', 'default'))
 	def __init__(self):
 		#####################################
 		# Initialize BearLibTerminal Window #
@@ -202,6 +241,12 @@ class MEDIAPLAYER:
 		terminal.printf(25, 2, self.title)
 		terminal.composition(terminal.TK_ON)
 		terminal.refresh()
+		'''
+		display = Display()
+		root = display.screen().root
+		printWindowHierrarchy(root, '-')
+		'''
+		self.window_id = get_current_win()
 		###################################################################
 		# Global Hotkeys using the keyboard module as a low level wrapper #
 		###################################################################
@@ -212,30 +257,45 @@ class MEDIAPLAYER:
 		keyboard.add_hotkey(config.get('innit', 'key_pause'), self.global_hotkey, args=('p'))
 		keyboard.add_hotkey(config.get('innit', 'key_volup'), self.global_hotkey, args=('u'))
 		keyboard.add_hotkey(config.get('innit', 'key_voldn'), self.global_hotkey, args=('m'))
-		keyboard.add_hotkey(config.get('innit', 'key_rwnd'), self.global_hotkey, args=('j'))
-		keyboard.add_hotkey(config.get('innit', 'key_ffwd'), self.global_hotkey, args=('k'))
 		keyboard.add_hotkey(config.get('innit', 'key_stop'), self.global_hotkey, args=('s'))
 		keyboard.add_hotkey(config.get('innit', 'key_mark_watched'), self.global_hotkey, args=('w'))
+		# these keys only work when the program is in focus
+		keyboard.add_hotkey('enter', self.global_hotkey, args=('f'))
+		keyboard.add_hotkey('space', self.global_hotkey, args=(' '))
+		keyboard.add_hotkey('esc', self.global_hotkey, args=('q'))
+		keyboard.add_hotkey('left', self.global_hotkey, args=('4'))
+		keyboard.add_hotkey('right', self.global_hotkey, args=('6'))
+		keyboard.add_hotkey('up', self.global_hotkey, args=('8'))
+		keyboard.add_hotkey('down', self.global_hotkey, args=('2'))
 		self.start_main_loop()
 
-	def select_color(self, string):
-		theme = user.get('settings', 'theme')
-		t = ast.literal_eval(user.get('theme', theme))
-		c = t[string]
-		#c = config.get('default', string)
-		return c
-
-	def save_settings(self):
-		curDir = os.getcwd() # save current directory
-		os.chdir(owd) # return to working dir
-		with open('user_settings.ini', 'w') as configfile:
-			user.write(configfile)
-		os.chdir(curDir) # change back
-
 	def global_hotkey(self, key):
-		if key == ' ':
-			self.hotkeys = not self.hotkeys
-		if self.hotkeys:
+		# Workaround: Could not get functional controls on the popup video window from python-vlc
+		# Low level global hotkey reader only works when the Media Player or it's popup video are in focus
+		if self.window_id == get_current_win():
+			if self.player != None:
+				if key == ' ':
+					self.player.pause()
+				if key == 'f':
+					self.player.fullscreen()
+				if key == 'q':
+					self.player.stop()
+				if key == '4':
+					self.player.pan(-5)
+				if key == '6':
+					self.player.pan(5)
+				if key == '8':
+					self.vol += 5
+					if self.vol > 200:
+						self.vol = 200
+					self.player.set_volume(self.vol)
+				if key == '2':
+					self.player.set_volume(self.vol)
+					self.vol -= 5
+					if self.vol < 0:
+						self.vol = 0
+		# Regular global hotkeys from the ini file
+		if self.hotkeys and self.player != None:
 			if key == 'e':
 				pass
 			if key == 'w' and self.mouse_over != None:
@@ -251,10 +311,6 @@ class MEDIAPLAYER:
 				self.vol -= 5
 				if self.vol < 0:
 					self.vol = 0
-			if key == 'j':
-				self.player.pan(-5)
-			if key == 'k':
-				self.player.pan(5)
 			if key == 'n':
 				self.player.next()
 			if key == 'b':
@@ -263,6 +319,21 @@ class MEDIAPLAYER:
 				self.player.pause()
 			if key == 's':
 				self.player.stop()
+
+	def select_color(self, string):
+		theme = user.get('settings', 'theme')
+		t = ast.literal_eval(user.get('theme', theme))
+		c = t[string]
+		#c = config.get('default', string)
+		return c
+
+	def save_settings(self):
+		curDir = os.getcwd() # save current directory
+		os.chdir(owd) # return to working dir
+		with open('user_settings.ini', 'w') as configfile:
+			configfile.write(header)
+			user.write(configfile)
+		os.chdir(curDir) # change back
 
 	def play_new(self, link=None):
 		if self.player != None:
@@ -279,17 +350,20 @@ class MEDIAPLAYER:
 			self.player.add_to_playlist(self.current_drive + '//' + self.current_path + '/', self.current_file)
 			self.current_playlist.append(self.current_drive + '//' + self.current_path + '/' + self.current_file)
 		self.player.set_volume(self.vol)
+		self.player.update_eq(self.eq)
 		self.player.play()
 		#self.player.listPlayer.get_media_player().get_media().add_options("sub-file={}".format(sub))
 	def play_add(self, link=None):
-		if link != None:
-			self.player.add_to_playlist('', link)
-			self.current_playlist.append(link)
-		else:
-			self.player.add_to_playlist(self.current_drive + '//' + self.current_path + '/', self.current_file)
-			self.current_playlist.append(self.current_drive + '//' + self.current_path + '/' + self.current_file)
-		self.player.set_volume(self.vol)
-		self.player.play()
+		if '.' in self.current_file:
+			if link != None:
+				self.player.add_to_playlist('', link)
+				self.current_playlist.append(link)
+			elif self.current_file[-4::1] in file_types or self.current_file[-3::1] in file_types or self.current_file[-2::1] in file_types:
+				self.player.add_to_playlist(self.current_drive + '//' + self.current_path + '/', self.current_file)
+				self.current_playlist.append(self.current_drive + '//' + self.current_path + '/' + self.current_file)
+			self.player.set_volume(self.vol)
+			self.player.update_eq(self.eq)
+			self.player.play()
 
 	def start_main_loop(self):
 		os.chdir(self.current_drive)
@@ -321,7 +395,7 @@ class MEDIAPLAYER:
 			if UI.draw_window(1, 3, 68, 36, self.select_color('hud'), self.select_color('close')) and key == 128:
 				save_watched_list()
 				break
-			if self.input_state in ['main', 'eq', 'theme']:
+			if self.input_state in ['main', 'eq', 'theme', 'settings']:
 				#if self.player != None:
 					#print(self.player.listPlayer.get_media_player().video_get_cursor())
 				if key == terminal.TK_ESCAPE:
@@ -344,21 +418,13 @@ class MEDIAPLAYER:
 				h = 5
 				UI.draw_rect(w + 2, h, 50, 25)
 				if self.input_state == 'main':
-					MOD.file_browser(self, w, h, key)
+					MOD.file_browser(self, w, h, key, VLC)
 				elif self.input_state == 'eq':
-					#############
-					# Equalizer #
-					#############
-					w = 1
-					h = 5
 					MOD.equalizer(self, w, h, eq_presets, user, key)
 				elif self.input_state == 'theme':
-					#################
-					# Theme Options #
-					#################
-					w = 1
-					h = 5
 					MOD.themes(self, w, h, theme_presets, user, key)
+				elif self.input_state == 'settings':
+					MOD.settings(self, w, h, user, key)
 				###################
 				# Playlist Window #
 				###################
@@ -371,11 +437,11 @@ class MEDIAPLAYER:
 				if self.player != None:
 					w = 42
 					h = 28
-					MOD.player_ui(self, w, h, key)
 					###############
 					# Track Title #
 					###############
 					MOD.track_title_ui(self, w, h, key)
+					MOD.player_ui(self, w, h, key)
 			terminal.refresh()
 		print('closing')
 
@@ -385,14 +451,27 @@ class MEDIAPLAYER:
 		return text
 
 	def list_dir(self, w, h, path):
+		global watched_list
 		#self.mouse_over = None
+		curDir =os.getcwd().replace('\\', '/')
+		if curDir != path:
+			os.chdir(path)
+			for n in white_list:
+				if n in path:
+					watched_list = load_watched_list()
+					if watched_list == {}:
+						watched_list = load_watched_list()
+					break
 		dir = os.listdir(path)
 		file = None
 		size = 23
 		# blacklist non playable files
 		file_list = []
 		for i in dir:
-			if '.srt' not in i and '.txt' not in i:
+			if '.' in i:
+				if i[-4::1] in file_types or i[-3::1] in file_types or i[-2::1] in file_types:
+					file_list.append(i)
+			else:
 				file_list.append(i)
 		if self.scroll >= len(file_list) - size:
 			if len(file_list) - size <= 0:
@@ -410,26 +489,28 @@ class MEDIAPLAYER:
 			color = ''
 			# color code the watch list
 			if rname in watched_list:
-				if watched_list[rname] > 0.9:
-					color = '[color=grey]'
+				if watched_list[rname] > 0.95:
+					color = '[color=' + self.select_color('grey') + ']'
 				elif watched_list[rname] > 0.7:
-					color = '[color=dark orange]'
+					color = '[color=' + self.select_color('watching') + ']'
 				elif watched_list[rname] > 0.6:
-					color = '[color=orange]'
+					color = '[color=' + self.select_color('watching') + ']'
 				elif watched_list[rname] > 0.4:
-					color = '[color=light orange]'
+					color = '[color=' + self.select_color('watching') + ']'
 				elif watched_list[rname] > 0.2:
-					color = '[color=dark yellow]'
+					color = '[color=' + self.select_color('watching') + ']'
 				elif watched_list[rname] > 0.1:
-					color = '[color=yellow]'
+					color = '[color=' + self.select_color('mark') + ']'
 				elif watched_list[rname] > 0.05:
-					color = '[color=lighter yellow]'
+					color = '[color=' + self.select_color('mark') + ']'
 				else:
 					watched_list.pop(rname, None)
 			name = self.trimmed(file_list[i + self.scroll], 48)
-			if UI.button_text(w+3, h+1 + i, name, self.select_color('selected'), bg=color):
+			if self.drop_down == None and UI.button_text(w+3, h+1 + i, name, self.select_color('selected'), bg=color):
 				self.mouse_over = rname
 				file = file_list[i + self.scroll]
+			else:
+				terminal.printf(w+3, h+1 + i, color + name)
 		return file
 
 if __name__ == '__main__':
@@ -448,3 +529,17 @@ if __name__ == '__main__':
 			stats.print_stats(10)
 	else:
 		mediaplayer = MEDIAPLAYER()
+
+'''
+@ Issues
+eq does not load until tab opened
+
+@ TODO
+
+screen lock
+
+self contained playlist control
+
+settings window
+
+'''
