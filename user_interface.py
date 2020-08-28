@@ -20,6 +20,7 @@ handle mouse clicks.
 
 BASIC EXAMPLE: TOGGLE BUTTON
 
+sel = False
 if UI.button_text(4, 3, str(sel), '045,165,165') and key == terminal.TK_MOUSE_LEFT:
     sel = not sel
 
