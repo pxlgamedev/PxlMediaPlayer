@@ -245,6 +245,8 @@ def themes(self, w, h, theme_presets, user, key):
 
 def settings(self, w, h, user, key):
 	if UI.button_box(w + 18, h + 26, 'Text Entry', self.select_color('selected')) and key == 128:
+		pass
+		'''
 		s = ''
 		text_area = ['']
 		'''
@@ -307,6 +309,7 @@ def settings(self, w, h, user, key):
 				text = '\n'.join(text[-height::1])
 			terminal.printf(w+3, h+1, text + '▓')
 			terminal.refresh()
+			'''
 
 def playlist(self, w, h, key):
 	UI.draw_rect(w, h, 17, 25)
