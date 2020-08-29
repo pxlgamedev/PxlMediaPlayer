@@ -249,9 +249,7 @@ def settings(self, w, h, user, key):
 		'''
 		s = ''
 		text_area = ['']
-		'''
-		word wrap each string in the list, and then join the list with '\n'
-		'''
+		# word wrap each string in the list, and then join the list with '\n'
 		width = 45
 		height = 22
 		cursor_pos = 0
